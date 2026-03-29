@@ -145,3 +145,27 @@ MIT License - see LICENSE file for details.
 ---
 
 Built with ❤️ by [Sonny Smith AI](https://github.com/sonny-smith-ai)
+## Quick Deployment Guide
+
+### For Paul - Live Demo Setup:
+
+**Repository:** https://github.com/sonny-smith-ai/task-dashboard-demo
+
+**Supabase Setup:**
+1. Use existing PayloadCMS project: `xxyaixuujdzabkocdvue.supabase.co`
+2. Execute schema in SQL Editor (copy from `/sql/schema.sql`)
+3. Get anon key from Project Settings > API
+
+**Vercel Deployment:**
+1. Import GitHub repository: `sonny-smith-ai/task-dashboard-demo`
+2. Set environment variables:
+   - `NEXT_PUBLIC_SUPABASE_URL=https://xxyaixuujdzabkocdvue.supabase.co`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY=[from-supabase-dashboard]`
+3. Deploy
+
+**Test Features:**
+- Create tasks with different priorities
+- Change status to see real-time updates
+- Open multiple tabs to see sync
+- Check audit log sidebar for changes
+

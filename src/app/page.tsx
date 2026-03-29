@@ -2,28 +2,114 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Task, AuditLog } from '@/types/database'
-import { v4 as uuidv4 } from 'uuid'
+import type { Database } from '@/types/database'
 
-export default function Dashboard() {
+type Task = Database['public']['Tables']['tasks']['Row']
+type AuditLog = Database['public']['Tables']['audit_logs']['Row']
+
+export default function TaskDashboard() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
-  const [newTask, setNewTask] = useState<{ title: string; description: string; priority: Task['priority'] }>({ title: '', description: '', priority: 'medium' })
-  const [loading, setLoading] = useState(true)
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [priority, setPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium')
+  const [isLoading, setIsLoading] = useState(false)
+
+  // Fetch tasks
+  const fetchTasks = async () => {
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .order('created_at', { ascending: false })
+    
+    if (error) {
+      console.error('Error fetching tasks:', error)
+    } else {
+      setTasks(data)
+    }
+  }
+
+  // Fetch audit logs
+  const fetchAuditLogs = async () => {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(10)
+    
+    if (error) {
+      console.error('Error fetching audit logs:', error)
+    } else {
+      setAuditLogs(data)
+    }
+  }
+
+  // Create task
+  const createTask = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!title.trim()) return
+
+    setIsLoading(true)
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert({
+        title: title.trim(),
+        description: description.trim() || null,
+        priority,
+        status: 'pending'
+      })
+      .select()
+
+    if (error) {
+      console.error('Error creating task:', error)
+    } else {
+      setTitle('')
+      setDescription('')
+      setPriority('medium')
+      fetchTasks()
+    }
+    setIsLoading(false)
+  }
+
+  // Update task status
+  const updateTaskStatus = async (id: string, newStatus: string) => {
+    const { error } = await supabase
+      .from('tasks')
+      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .eq('id', id)
+
+    if (error) {
+      console.error('Error updating task:', error)
+    } else {
+      fetchTasks()
+    }
+  }
 
   useEffect(() => {
     fetchTasks()
     fetchAuditLogs()
-    
+
     // Set up real-time subscriptions
     const tasksSubscription = supabase
-      .channel('tasks')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, fetchTasks)
+      .channel('tasks-changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'tasks'
+      }, () => {
+        fetchTasks()
+      })
       .subscribe()
 
     const auditSubscription = supabase
-      .channel('audit_logs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, fetchAuditLogs)
+      .channel('audit-changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'audit_logs'
+      }, () => {
+        fetchAuditLogs()
+      })
       .subscribe()
 
     return () => {
@@ -32,258 +118,251 @@ export default function Dashboard() {
     }
   }, [])
 
-  const fetchTasks = async () => {
-    const { data } = await supabase
-      .from('tasks')
-      .select('*')
-      .order('created_at', { ascending: false })
-    setTasks(data || [])
-    setLoading(false)
-  }
-
-  const fetchAuditLogs = async () => {
-    const { data } = await supabase
-      .from('audit_logs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(50)
-    setAuditLogs(data || [])
-  }
-
-  const createTask = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const task: Omit<Task, 'created_at' | 'updated_at'> = {
-      id: uuidv4(),
-      title: newTask.title,
-      description: newTask.description,
-      status: 'pending',
-      priority: newTask.priority,
-    }
-
-    await supabase.from('tasks').insert([task])
-    await logAudit(task.id, 'created', null, task)
-    setNewTask({ title: '', description: '', priority: 'medium' })
-  }
-
-  const updateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
-    const oldTask = tasks.find(t => t.id === taskId)
-    await supabase.from('tasks').update({ 
-      status: newStatus, 
-      updated_at: new Date().toISOString(),
-      ...(newStatus === 'completed' && { completed_at: new Date().toISOString() })
-    }).eq('id', taskId)
-    
-    if (oldTask) {
-      await logAudit(taskId, 'status_changed', 
-        { status: oldTask.status }, 
-        { status: newStatus }
-      )
-    }
-  }
-
-  const logAudit = async (taskId: string, action: AuditLog['action'], oldValues: any, newValues: any) => {
-    const auditLog: Omit<AuditLog, 'created_at'> = {
-      id: uuidv4(),
-      task_id: taskId,
-      action,
-      old_values: oldValues,
-      new_values: newValues,
-      user_id: 'sonny-ai',
-    }
-    await supabase.from('audit_logs').insert([auditLog])
-  }
-
-  const getStatusColor = (status: Task['status']) => {
+  const getStatusColor = (status: string) => {
     switch (status) {
-      case 'pending': return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
-      case 'in_progress': return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-      case 'completed': return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-      case 'cancelled': return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+      case 'pending': return 'text-amber-400'
+      case 'in_progress': return 'text-cyan-400'
+      case 'completed': return 'text-emerald-400'
+      case 'cancelled': return 'text-red-400'
+      default: return 'text-gray-400'
     }
   }
 
-  const getPriorityColor = (priority: Task['priority']) => {
+  const getPriorityGlow = (priority: string) => {
     switch (priority) {
-      case 'low': return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
-      case 'medium': return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'  
-      case 'high': return 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200'
-      case 'urgent': return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+      case 'low': return 'shadow-[0_0_10px_rgba(34,197,94,0.5)]'
+      case 'medium': return 'shadow-[0_0_10px_rgba(59,130,246,0.5)]'
+      case 'high': return 'shadow-[0_0_10px_rgba(251,146,60,0.5)]'
+      case 'urgent': return 'shadow-[0_0_15px_rgba(239,68,68,0.7)]'
+      default: return ''
     }
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-500"></div>
-      </div>
-    )
   }
 
   return (
-    <div className="min-h-screen p-8">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-8">
-          Task Dashboard
-        </h1>
-
-        {/* Create Task Form */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-white">Create New Task</h2>
-          <form onSubmit={createTask} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="md:col-span-2">
-                <input
-                  type="text"
-                  placeholder="Task title..."
-                  value={newTask.title}
-                  onChange={(e) => setNewTask(prev => ({ ...prev, title: e.target.value }))}
-                  className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                  required
-                />
-              </div>
-              <div>
-                <select
-                  value={newTask.priority}
-                  onChange={(e) => setNewTask(prev => ({ ...prev, priority: e.target.value as Task['priority'] }))}
-                  className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                >
-                  <option value="low">Low Priority</option>
-                  <option value="medium">Medium Priority</option>
-                  <option value="high">High Priority</option>
-                  <option value="urgent">Urgent</option>
-                </select>
-              </div>
-            </div>
-            <textarea
-              placeholder="Task description (optional)..."
-              value={newTask.description}
-              onChange={(e) => setNewTask(prev => ({ ...prev, description: e.target.value }))}
-              className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              rows={3}
-            />
-            <button
-              type="submit"
-              className="bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-            >
-              Create Task
-            </button>
-          </form>
+    <div className="min-h-screen bg-black text-green-400 font-mono relative overflow-hidden">
+      {/* Scanline Effect */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-green-500/5 to-transparent animate-pulse"></div>
+        <div className="absolute inset-0 opacity-20">
+          {Array.from({length: 50}).map((_, i) => (
+            <div 
+              key={i} 
+              className="h-px bg-gradient-to-r from-transparent via-green-500/20 to-transparent"
+              style={{marginTop: '20px'}}
+            ></div>
+          ))}
         </div>
+      </div>
+
+      {/* CRT Curve Effect */}
+      <div className="fixed inset-0 pointer-events-none border-4 border-green-500/30 rounded-3xl shadow-[inset_0_0_100px_rgba(34,197,94,0.1)]"></div>
+
+      <div className="container mx-auto px-6 py-8 relative z-10">
+        {/* Header */}
+        <header className="text-center mb-12 animate-[fadeInDown_1s_ease-out]">
+          <div className="inline-block relative">
+            <h1 className="text-5xl font-bold text-green-400 mb-2 tracking-wider [text-shadow:0_0_20px_rgba(34,197,94,0.8)]">
+              ▶ TASK_TERMINAL
+            </h1>
+            <div className="text-cyan-400 text-sm tracking-[0.2em] [text-shadow:0_0_10px_rgba(34,197,94,0.5)]">
+              REAL-TIME PRODUCTIVITY MATRIX
+            </div>
+            <div className="absolute -top-2 -right-2 w-4 h-4 bg-green-400 rounded-full animate-ping"></div>
+          </div>
+        </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Tasks List */}
-          <div className="lg:col-span-2">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow">
-              <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                  Tasks ({tasks.length})
+          {/* Create Task Terminal */}
+          <div className="lg:col-span-2 animate-[slideInLeft_0.8s_ease-out_0.2s_both]">
+            <div className="bg-gray-900/80 backdrop-blur-sm border-2 border-green-500/50 rounded-lg p-6 shadow-[0_0_30px_rgba(34,197,94,0.2)]">
+              <div className="flex items-center mb-4">
+                <div className="flex space-x-2 mr-4">
+                  <div className="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]"></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.8)]"></div>
+                  <div className="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]"></div>
+                </div>
+                <h2 className="text-xl font-bold text-cyan-400 [text-shadow:0_0_10px_rgba(6,182,212,0.8)]">
+                  // CREATE_NEW_TASK
                 </h2>
               </div>
-              <div className="p-6 space-y-4">
-                {tasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:shadow-md transition-shadow"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <h3 className="font-medium text-gray-900 dark:text-white mb-2">
-                          {task.title}
-                        </h3>
-                        {task.description && (
-                          <p className="text-gray-600 dark:text-gray-300 mb-3">
-                            {task.description}
-                          </p>
-                        )}
-                        <div className="flex items-center space-x-2">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(task.status)}`}>
-                            {task.status.replace('_', ' ')}
-                          </span>
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${getPriorityColor(task.priority)}`}>
-                            {task.priority}
-                          </span>
-                        </div>
+              
+              <form onSubmit={createTask} className="space-y-4">
+                <div>
+                  <label className="block text-green-300 text-sm mb-2 tracking-wider">
+                    &gt; TASK_TITLE:
+                  </label>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Enter mission objective..."
+                    className="w-full bg-black/70 border-2 border-cyan-500/50 rounded px-4 py-3 text-green-400 placeholder-green-600/60 focus:border-cyan-400 focus:shadow-[0_0_20px_rgba(6,182,212,0.5)] transition-all duration-300 font-mono"
+                    required
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-green-300 text-sm mb-2 tracking-wider">
+                      &gt; PRIORITY_LEVEL:
+                    </label>
+                    <select
+                      value={priority}
+                      onChange={(e) => setPriority(e.target.value as any)}
+                      className={`w-full bg-black/70 border-2 border-cyan-500/50 rounded px-4 py-3 text-green-400 focus:border-cyan-400 transition-all duration-300 font-mono ${getPriorityGlow(priority)}`}
+                    >
+                      <option value="low">LOW</option>
+                      <option value="medium">MEDIUM</option>
+                      <option value="high">HIGH</option>
+                      <option value="urgent">URGENT</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-green-300 text-sm mb-2 tracking-wider">
+                    &gt; DESCRIPTION:
+                  </label>
+                  <textarea
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Optional mission details..."
+                    rows={3}
+                    className="w-full bg-black/70 border-2 border-cyan-500/50 rounded px-4 py-3 text-green-400 placeholder-green-600/60 focus:border-cyan-400 focus:shadow-[0_0_20px_rgba(6,182,212,0.5)] transition-all duration-300 font-mono resize-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-gradient-to-r from-green-600 to-cyan-600 text-black font-bold py-3 px-6 rounded hover:from-green-500 hover:to-cyan-500 disabled:opacity-50 transition-all duration-300 shadow-[0_0_20px_rgba(34,197,94,0.5)] hover:shadow-[0_0_30px_rgba(34,197,94,0.8)] transform hover:scale-105"
+                >
+                  {isLoading ? 'EXECUTING...' : '▶ DEPLOY_TASK'}
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Audit Terminal */}
+          <div className="animate-[slideInRight_0.8s_ease-out_0.4s_both]">
+            <div className="bg-gray-900/80 backdrop-blur-sm border-2 border-cyan-500/50 rounded-lg p-6 shadow-[0_0_30px_rgba(6,182,212,0.2)] h-fit">
+              <h2 className="text-xl font-bold text-cyan-400 mb-4 [text-shadow:0_0_10px_rgba(6,182,212,0.8)]">
+                // SYSTEM_LOGS
+              </h2>
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {auditLogs.length === 0 ? (
+                  <div className="text-green-600/60 italic">
+                    &gt; Waiting for system activity...
+                  </div>
+                ) : (
+                  auditLogs.map((log) => (
+                    <div key={log.id} className="text-xs border-l-2 border-green-500/50 pl-3 py-1">
+                      <div className="text-cyan-300">
+                        [{new Date(log.created_at).toLocaleTimeString()}]
                       </div>
-                      <div className="ml-4">
-                        <select
-                          value={task.status}
-                          onChange={(e) => updateTaskStatus(task.id, e.target.value as Task['status'])}
-                          className="text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white p-1"
-                        >
-                          <option value="pending">Pending</option>
-                          <option value="in_progress">In Progress</option>
-                          <option value="completed">Completed</option>
-                          <option value="cancelled">Cancelled</option>
-                        </select>
+                      <div className="text-green-400">
+                        ACTION: {log.action.toUpperCase()}
+                      </div>
+                      <div className="text-green-600/80">
+                        TASK_ID: {log.task_id.slice(0,8)}...
                       </div>
                     </div>
-                    <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
-                      Created: {new Date(task.created_at).toLocaleDateString()}
-                      {task.completed_at && (
-                        <span className="ml-4">
-                          Completed: {new Date(task.completed_at).toLocaleDateString()}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {tasks.length === 0 && (
-                  <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                    No tasks yet. Create your first task above!
-                  </div>
+                  ))
                 )}
               </div>
             </div>
           </div>
 
-          {/* Audit Logs */}
-          <div className="lg:col-span-1">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow">
-              <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                  Audit Logs
-                </h2>
-              </div>
-              <div className="p-6">
-                <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {auditLogs.map((log) => (
-                    <div
-                      key={log.id}
-                      className="text-sm border-l-2 border-blue-500 pl-3 py-2"
+          {/* Tasks Grid */}
+          <div className="lg:col-span-3 animate-[fadeInUp_0.8s_ease-out_0.6s_both]">
+            <div className="bg-gray-900/80 backdrop-blur-sm border-2 border-green-500/50 rounded-lg p-6 shadow-[0_0_30px_rgba(34,197,94,0.2)]">
+              <h2 className="text-2xl font-bold text-green-400 mb-6 [text-shadow:0_0_10px_rgba(34,197,94,0.8)]">
+                // ACTIVE_MISSIONS ({tasks.length})
+              </h2>
+              
+              {tasks.length === 0 ? (
+                <div className="text-center py-12 text-green-600/60">
+                  <div className="text-6xl mb-4">⚡</div>
+                  <div className="text-xl">NO ACTIVE MISSIONS</div>
+                  <div className="text-sm mt-2">Deploy your first task above...</div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {tasks.map((task, index) => (
+                    <div 
+                      key={task.id} 
+                      className={`bg-black/60 border-2 border-green-500/30 rounded-lg p-4 hover:border-cyan-500/60 transition-all duration-300 ${getPriorityGlow(task.priority)} transform hover:scale-105`}
+                      style={{animationDelay: `${index * 0.1}s`}}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-gray-900 dark:text-white capitalize">
-                          {log.action.replace('_', ' ')}
-                        </span>
-                        <span className="text-xs text-gray-500 dark:text-gray-400">
-                          {new Date(log.created_at).toLocaleTimeString()}
-                        </span>
+                      <div className="flex justify-between items-start mb-3">
+                        <div className="flex-1">
+                          <h3 className="font-bold text-green-400 text-lg mb-1 [text-shadow:0_0_5px_rgba(34,197,94,0.8)]">
+                            {task.title}
+                          </h3>
+                          {task.description && (
+                            <p className="text-green-300/80 text-sm mb-2">
+                              {task.description}
+                            </p>
+                          )}
+                        </div>
+                        <div className="ml-4">
+                          <div className="text-xs text-cyan-400 mb-1">
+                            PRI: {task.priority.toUpperCase()}
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-gray-600 dark:text-gray-300 mt-1">
-                        Task: {tasks.find(t => t.id === log.task_id)?.title || 'Unknown'}
-                      </div>
-                      {log.old_values && log.new_values && (
-                        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                          {Object.keys(log.old_values).map(key => (
-                            <div key={key}>
-                              {key}: {log.old_values![key]} → {log.new_values![key]}
-                            </div>
+
+                      <div className="flex justify-between items-center">
+                        <div className="flex space-x-2">
+                          {['pending', 'in_progress', 'completed'].map((status) => (
+                            <button
+                              key={status}
+                              onClick={() => updateTaskStatus(task.id, status)}
+                              className={`px-2 py-1 rounded text-xs font-mono transition-all duration-300 border ${
+                                task.status === status 
+                                  ? `border-cyan-400 ${getStatusColor(status)} shadow-[0_0_10px_rgba(6,182,212,0.5)]`
+                                  : 'border-gray-600 text-gray-500 hover:border-gray-500'
+                              }`}
+                            >
+                              {status.replace('_', ' ').toUpperCase()}
+                            </button>
                           ))}
                         </div>
-                      )}
+                        <div className={`text-xs font-mono ${getStatusColor(task.status)} [text-shadow:0_0_5px_currentColor]`}>
+                          ● {task.status.toUpperCase()}
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-green-600/60 mt-3 pt-3 border-t border-green-500/20">
+                        INIT: {new Date(task.created_at).toLocaleDateString()}
+                      </div>
                     </div>
                   ))}
-                  {auditLogs.length === 0 && (
-                    <div className="text-center py-4 text-gray-500 dark:text-gray-400 text-sm">
-                      No audit logs yet
-                    </div>
-                  )}
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      <style jsx global>{`
+        @keyframes fadeInDown {
+          from { opacity: 0; transform: translateY(-30px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes slideInLeft {
+          from { opacity: 0; transform: translateX(-50px); }
+          to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes slideInRight {
+          from { opacity: 0; transform: translateX(50px); }
+          to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes fadeInUp {
+          from { opacity: 0; transform: translateY(30px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   )
 }
